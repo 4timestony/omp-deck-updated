@@ -5,6 +5,25 @@ All notable changes to omp-deck. The format is loosely based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The kanban board is now scoped per project.** Previously every task from every repo rendered on one board: `tasks.cwd` was recorded on each row but `listTasks()` never filtered on it, and `GET /api/tasks` accepted no scope, so a deck driving more than one codebase became unusable. The board now has a project switcher and remembers your selection.
+
+### Added
+
+- **`GET /api/tasks?cwd=<path>`** scopes the response to one project. `?cwd=` (present but empty) returns the rows with no cwd recorded; omitting the parameter returns every project, so existing clients and the routines `deck` step are unaffected.
+- **`projects[]` on `ListTasksResponse`** — every project that holds a task, with label and count, computed **unfiltered** so the switcher can list the project you are about to switch to. New protocol type: `TaskProject`.
+- **Project switcher in the kanban header.** Selection persists in `localStorage` (per browser, not per server) so two tabs can sit on two different repos. In "All projects" each card is labelled with its owning project.
+- Cards created from the board are now filed against the active project instead of landing with a null cwd — the other half of the bug, which is why tasks kept leaking back into every board.
+- `listTaskProjects()` in the DB layer; `deriveLabel()` extracted to `workspace-label.ts` so the kanban switcher and the session workspace picker name a repo identically.
+- 7 DB tests covering scope isolation, the unassigned bucket, composition with the archived filter, and project counts; 10 tests on the filter round-trip.
+
+### Notes
+
+- No migration required — this reads the `cwd` column that has existed since `001-init.sql`. Tasks created before this change have no cwd and appear under **Unassigned**; open one and set its cwd to file it.
+- Deep links (`/tasks?open=<id>`) into a task outside the active scope widen the board to "All projects" rather than silently failing.
+- `/task list` in chat keeps its existing lenient semantics (active cwd plus unscoped rows) — unchanged by this patch.
+
 ## [0.6.1] — 2026-05-29 — In-app update notification
 
 Small follow-up to v0.6.0. Adds a passive update-check pill in the StatusBar so future releases (this one and onward) become discoverable from inside the deck instead of requiring users to run `npm outdated -g`.

@@ -15,14 +15,21 @@ import {
 } from "@dnd-kit/sortable";
 import { Settings2 } from "lucide-react";
 
-import type { Task, TaskState } from "@omp-deck/protocol";
+import type { Task, TaskProject, TaskState } from "@omp-deck/protocol";
 
 import { Layout } from "@/components/Layout";
 import { Column } from "@/components/tasks/Column";
 import { TaskCardBody } from "@/components/tasks/TaskCard";
 import { TaskModal } from "@/components/tasks/TaskModal";
+import { ProjectPicker } from "@/components/tasks/ProjectPicker";
 import { StateConfig } from "@/components/tasks/StateConfig";
 import { tasksApi } from "@/lib/tasks-api";
+import {
+	loadProjectFilter,
+	saveProjectFilter,
+	toQueryCwd,
+	type ProjectFilter,
+} from "@/lib/kanban-project";
 import { useStore } from "@/lib/store";
 
 export function TasksView() {
@@ -35,8 +42,15 @@ export function TasksView() {
 
 	const [tasks, setTasks] = useState<Task[]>([]);
 	const [states, setStates] = useState<TaskState[]>([]);
+	const [projects, setProjects] = useState<TaskProject[]>([]);
+	const [projectFilter, setProjectFilterState] = useState<ProjectFilter>(() => loadProjectFilter());
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(true);
+
+	const setProjectFilter = useCallback((next: ProjectFilter): void => {
+		setProjectFilterState(next);
+		saveProjectFilter(next);
+	}, []);
 
 	const [openTask, setOpenTask] = useState<Task | undefined>();
 	const [showStateConfig, setShowStateConfig] = useState(false);
@@ -49,16 +63,17 @@ export function TasksView() {
 
 	const refresh = useCallback(async (): Promise<void> => {
 		try {
-			const data = await tasksApi.list();
+			const data = await tasksApi.list({ cwd: toQueryCwd(projectFilter) });
 			setTasks(data.tasks);
 			setStates(data.states);
+			setProjects(data.projects ?? []);
 			setError(undefined);
 		} catch (e) {
 			setError(String(e));
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [projectFilter]);
 
 	useEffect(() => {
 		void refresh();
@@ -79,15 +94,20 @@ export function TasksView() {
 	// the param so back/forward navigation doesn't re-open it.
 	useEffect(() => {
 		const wantedId = searchParams.get("open");
-		if (!wantedId || tasks.length === 0) return;
+		if (!wantedId || loading) return;
 		const found = tasks.find((t) => t.id === wantedId);
-		if (found) {
-			setOpenTask(found);
-			const next = new URLSearchParams(searchParams);
-			next.delete("open");
-			setSearchParams(next, { replace: true });
+		if (!found) {
+			// The deep-linked task belongs to a project we are not scoped to
+			// (e.g. "Promote to task" from the inbox). Widen to all projects
+			// once rather than silently dropping the link on the floor.
+			if (projectFilter.kind !== "all") setProjectFilter({ kind: "all" });
+			return;
 		}
-	}, [searchParams, setSearchParams, tasks]);
+		setOpenTask(found);
+		const next = new URLSearchParams(searchParams);
+		next.delete("open");
+		setSearchParams(next, { replace: true });
+	}, [searchParams, setSearchParams, tasks, loading, projectFilter, setProjectFilter]);
 
 	const tasksByState = useMemo(() => {
 		const map: Record<string, Task[]> = {};
@@ -101,8 +121,13 @@ export function TasksView() {
 
 	async function onCreate(stateId: string, title: string): Promise<void> {
 		try {
-			const created = await tasksApi.create({ title, stateId });
+			// File the card into whatever project the board is scoped to. This is
+			// the other half of the fix: without it, cards added from the board
+			// land with a null cwd and reappear in every project's "Unassigned".
+			const cwd = projectFilter.kind === "cwd" ? projectFilter.cwd : undefined;
+			const created = await tasksApi.create({ title, stateId, ...(cwd ? { cwd } : {}) });
 			setTasks((prev) => [...prev, created]);
+			setProjects((prev) => bumpProjectCount(prev, created.cwd ?? null, 1));
 		} catch (e) {
 			setError(String(e));
 		}
@@ -228,6 +253,9 @@ export function TasksView() {
 			const updated = await tasksApi.update(openTask.id, patch);
 			setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
 			setOpenTask(updated);
+			// Re-filing a task under a different cwd can move it off the board we
+			// are looking at, so re-read rather than leaving a stale card behind.
+			if (patch.cwd !== undefined) await refresh();
 		} catch (e) {
 			setError(String(e));
 		}
@@ -274,6 +302,11 @@ export function TasksView() {
 					<div className="flex h-full min-h-0 flex-col">
 						<div className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-paper px-3">
 							<div className="meta">Kanban</div>
+							<ProjectPicker
+								projects={projects}
+								value={projectFilter}
+								onChange={setProjectFilter}
+							/>
 							<div className="text-xs text-ink-3">
 								{tasks.length} task{tasks.length === 1 ? "" : "s"} · {states.length} columns
 							</div>
@@ -318,6 +351,7 @@ export function TasksView() {
 												key={s.id}
 												state={s}
 												tasks={tasksByState[s.id] ?? []}
+												showProject={projectFilter.kind === "all"}
 												onCreate={(stateId, title) => void onCreate(stateId, title)}
 												onOpen={(t) => setOpenTask(t)}
 												onRenameRequest={() => {
@@ -390,6 +424,22 @@ export function TasksView() {
 			/>
 		</>
 	);
+}
+
+/**
+ * Adjust one project's count after an optimistic create so the switcher does
+ * not read as stale until the next refetch.
+ */
+function bumpProjectCount(projects: TaskProject[], cwd: string | null, delta: number): TaskProject[] {
+	const existing = projects.find((p) => p.cwd === cwd);
+	if (existing) {
+		return projects.map((p) =>
+			p.cwd === cwd ? { ...p, taskCount: Math.max(0, p.taskCount + delta) } : p,
+		);
+	}
+	if (delta <= 0) return projects;
+	const label = cwd === null ? "Unassigned" : (cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd);
+	return [...projects, { cwd, label, taskCount: delta }];
 }
 
 function EmptyInspector() {

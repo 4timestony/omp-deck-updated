@@ -13,6 +13,7 @@ import type { Config } from "./config.ts";
 import { logger } from "./log.ts";
 import { getBuildInfo, getUptimeSecs } from "./build-info.ts";
 import { getUpdateCheck } from "./update-check.ts";
+import { deriveLabel } from "./workspace-label.ts";
 import type { AgentBridge } from "./bridge/types.ts";
 
 const log = logger("routes");
@@ -252,10 +253,4 @@ export function buildRouter(
 	app.route("/onboarding", buildOnboardingRouter());
 
 	return app;
-}
-
-function deriveLabel(cwd: string): string {
-	if (!cwd) return "(unknown)";
-	const parts = cwd.split(/[\\/]/).filter(Boolean);
-	return parts[parts.length - 1] ?? cwd;
 }

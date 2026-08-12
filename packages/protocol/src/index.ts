@@ -1168,9 +1168,28 @@ export interface UpdateTaskRequest {
 	archived?: boolean;
 }
 
+/**
+ * One entry in the kanban project switcher.
+ *
+ * A "project" is just a distinct `tasks.cwd` value — the same working
+ * directory that identifies a chat workspace — so a task filed from a repo
+ * belongs to that repo's board without needing a second grouping concept.
+ */
+export interface TaskProject {
+	/** `null` for rows with no cwd recorded; rendered as "Unassigned". */
+	cwd: string | null;
+	label: string;
+	taskCount: number;
+}
+
 export interface ListTasksResponse {
 	tasks: Task[];
 	states: TaskState[];
+	/**
+	 * Every project that currently holds a task, counted **unfiltered** — the
+	 * switcher has to list the projects you are not presently looking at.
+	 */
+	projects: TaskProject[];
 }
 
 export interface CreateTaskStateRequest {

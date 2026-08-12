@@ -17,6 +17,8 @@ interface Props {
 	onOpen: (task: Task) => void;
 	onRenameRequest?: (state: TaskState) => void;
 	isDraggingColumns: boolean;
+	/** Label each card with its owning project (set when scoped to "All"). */
+	showProject?: boolean;
 }
 
 /**
@@ -41,6 +43,7 @@ export function Column({
 	onOpen,
 	onRenameRequest,
 	isDraggingColumns,
+	showProject = false,
 }: Props) {
 	const {
 		attributes,
@@ -127,7 +130,7 @@ export function Column({
 				<SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
 					<div className="flex flex-col gap-1.5">
 						{tasks.map((t) => (
-							<TaskCard key={t.id} task={t} onOpen={onOpen} />
+							<TaskCard key={t.id} task={t} onOpen={onOpen} showProject={showProject} />
 						))}
 					</div>
 				</SortableContext>

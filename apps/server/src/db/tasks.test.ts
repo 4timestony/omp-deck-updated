@@ -12,6 +12,7 @@ import {
 	createState,
 	createTask,
 	listStates,
+	listTaskProjects,
 	listTasks,
 	moveTask,
 	reorderStates,
@@ -169,5 +170,82 @@ describe("state_entered_at + recency sort", () => {
 
 		const done = listTasks().filter((t) => t.stateId === "s_done");
 		expect(done.map((t) => t.id)).toEqual([a.id, b.id]);
+	});
+});
+
+describe("project scoping", () => {
+	test("listTasks with no cwd option returns every project (back-compat)", () => {
+		bootDb();
+		createTask({ title: "in-alpha", stateId: "s_backlog", cwd: "/repos/alpha" });
+		createTask({ title: "in-beta", stateId: "s_backlog", cwd: "/repos/beta" });
+		createTask({ title: "loose", stateId: "s_backlog" });
+
+		const titles = listTasks().map((t) => t.title);
+		expect(titles).toContain("in-alpha");
+		expect(titles).toContain("in-beta");
+		expect(titles).toContain("loose");
+	});
+
+	test("listTasks scoped to a cwd excludes every other project", () => {
+		bootDb();
+		const alpha = createTask({ title: "in-alpha", stateId: "s_backlog", cwd: "/repos/alpha" });
+		createTask({ title: "in-beta", stateId: "s_backlog", cwd: "/repos/beta" });
+		createTask({ title: "loose", stateId: "s_backlog" });
+
+		const scoped = listTasks({ cwd: "/repos/alpha" });
+		expect(scoped.map((t) => t.id)).toEqual([alpha.id]);
+	});
+
+	test("listTasks with cwd:null returns only unassigned rows", () => {
+		bootDb();
+		createTask({ title: "in-alpha", stateId: "s_backlog", cwd: "/repos/alpha" });
+		const loose = createTask({ title: "loose", stateId: "s_backlog" });
+
+		const unassigned = listTasks({ cwd: null });
+		expect(unassigned.some((t) => t.id === loose.id)).toBe(true);
+		expect(unassigned.every((t) => t.cwd === undefined)).toBe(true);
+	});
+
+	test("scoping composes with the archived filter", () => {
+		bootDb();
+		const live = createTask({ title: "live", stateId: "s_backlog", cwd: "/repos/alpha" });
+		const gone = createTask({ title: "gone", stateId: "s_backlog", cwd: "/repos/alpha" });
+		updateTask(gone.id, { archived: true });
+
+		expect(listTasks({ cwd: "/repos/alpha" }).map((t) => t.id)).toEqual([live.id]);
+		const withArchived = listTasks({ cwd: "/repos/alpha", includeArchived: true }).map((t) => t.id);
+		expect(withArchived.sort()).toEqual([live.id, gone.id].sort());
+	});
+
+	test("a cwd nobody has filed against yields an empty board, not everything", () => {
+		bootDb();
+		createTask({ title: "in-alpha", stateId: "s_backlog", cwd: "/repos/alpha" });
+		expect(listTasks({ cwd: "/repos/nope" })).toEqual([]);
+	});
+
+	test("listTaskProjects counts each cwd group and keeps unassigned as null", () => {
+		bootDb();
+		createTask({ title: "a1", stateId: "s_backlog", cwd: "/repos/alpha" });
+		createTask({ title: "a2", stateId: "s_done", cwd: "/repos/alpha" });
+		createTask({ title: "b1", stateId: "s_backlog", cwd: "/repos/beta" });
+		createTask({ title: "loose", stateId: "s_backlog" });
+
+		const projects = listTaskProjects();
+		const byCwd = new Map(projects.map((p) => [p.cwd, p.taskCount]));
+		expect(byCwd.get("/repos/alpha")).toBe(2);
+		expect(byCwd.get("/repos/beta")).toBe(1);
+		// The seeded welcome task is also unassigned, so assert "at least ours".
+		expect(byCwd.get(null)).toBeGreaterThanOrEqual(1);
+	});
+
+	test("listTaskProjects ignores archived rows unless asked", () => {
+		bootDb();
+		const t = createTask({ title: "a1", stateId: "s_backlog", cwd: "/repos/alpha" });
+		updateTask(t.id, { archived: true });
+
+		expect(listTaskProjects().some((p) => p.cwd === "/repos/alpha")).toBe(false);
+		expect(
+			listTaskProjects({ includeArchived: true }).find((p) => p.cwd === "/repos/alpha")?.taskCount,
+		).toBe(1);
 	});
 });
