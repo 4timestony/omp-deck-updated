@@ -162,7 +162,13 @@ async function invokeApply(h: Harness, input: { reason?: string; extra?: Record<
 	return { resultPromise };
 }
 
-describe("PlanModeBridge", () => {
+// Skipped for the SDK 17 bump. Every case here exercises the 15.x approval
+// flow — the standing resolve handler, rename-on-approve, and the client
+// -supplied finalPath — all of which SDK 17 removed. `enter()` now refuses
+// outright, so these assert behaviour that no longer exists. Restore this
+// block (unchanged where it still applies) as part of porting plan mode to
+// the `setPlanProposalHandler` + `xd://propose` architecture.
+describe.skip("PlanModeBridge", () => {
 	let harness: Harness;
 
 	beforeEach(async () => {

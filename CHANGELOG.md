@@ -5,6 +5,16 @@ All notable changes to omp-deck. The format is loosely based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-coding-agent` from 15.1.7 to 17.2.15**, so the deck runs the same SDK major as a current `omp` CLI. Models, auth, sessions, MCP servers, skills, and slash commands now resolve through 17.x — a 15.1.7 deck could not see model-registry or config entries introduced after that pin. Verified: 4,214 models enumerated from the registry on boot.
+- Two API adaptations were required: `ExtensionUIContext` gained a required `addAutocompleteProvider` (no-op'd — the deck has no TUI composer), and `session.prompt` now resolves `boolean` instead of `void`.
+
+### Removed (temporarily)
+
+- **Plan mode is disabled on SDK 17.** `enter()` now throws with an explanatory message instead of half-working. SDK 17 removed `setStandingResolveHandler` and `renameApprovedPlanFile` and replaced `runResolveInvocation` with the `xd://propose` device model, which inverts this bridge's control flow: 15.x blocked inside a standing resolve handler awaiting the user, whereas 17 returns from `preparePlanForReview` immediately and expects the host to observe the propose dispatch and run approval **detached** from the event chain (awaiting it inside the dispatch stalls every other event), aborting the in-flight turn first so the model does not re-propose in a loop. Porting that is a deliberate piece of work, not a rename, so it is left unimplemented rather than half-migrated. The 15 `PlanModeBridge` tests are `describe.skip`ped with a pointer to the port; everything else in the suite still passes.
+- Note the old call path would have thrown at runtime regardless: the bridge types the session through its own structural interface, so the removal of `setStandingResolveHandler` was invisible to `tsc`.
+
 ### Fixed
 
 - **The kanban board is now scoped per project.** Previously every task from every repo rendered on one board: `tasks.cwd` was recorded on each row but `listTasks()` never filtered on it, and `GET /api/tasks` accepted no scope, so a deck driving more than one codebase became unusable. The board now has a project switcher and remembers your selection.
