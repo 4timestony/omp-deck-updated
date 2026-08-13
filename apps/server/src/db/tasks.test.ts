@@ -248,4 +248,33 @@ describe("project scoping", () => {
 			listTaskProjects({ includeArchived: true }).find((p) => p.cwd === "/repos/alpha")?.taskCount,
 		).toBe(1);
 	});
+
+	test("createTask with an empty or whitespace-only cwd stores null, not a phantom project", () => {
+		bootDb();
+		const empty = createTask({ title: "empty", stateId: "s_backlog", cwd: "" });
+		const blank = createTask({ title: "blank", stateId: "s_backlog", cwd: "   " });
+
+		expect(empty.cwd).toBeUndefined();
+		expect(blank.cwd).toBeUndefined();
+		const unassignedIds = listTasks({ cwd: null }).map((t) => t.id);
+		expect(unassignedIds).toContain(empty.id);
+		expect(unassignedIds).toContain(blank.id);
+		expect(listTaskProjects().some((p) => p.cwd === "")).toBe(false);
+	});
+
+	test("updateTask with cwd '' clears it to null", () => {
+		bootDb();
+		const t = createTask({ title: "a1", stateId: "s_backlog", cwd: "/repos/alpha" });
+		const updated = updateTask(t.id, { cwd: "" })!;
+		expect(updated.cwd).toBeUndefined();
+		expect(listTasks({ cwd: null }).map((x) => x.id)).toContain(t.id);
+	});
+
+	test("updateTask with cwd: null clears a previously-set cwd", () => {
+		bootDb();
+		const t = createTask({ title: "a1", stateId: "s_backlog", cwd: "/repos/alpha" });
+		const updated = updateTask(t.id, { cwd: null })!;
+		expect(updated.cwd).toBeUndefined();
+		expect(listTasks({ cwd: null }).map((x) => x.id)).toContain(t.id);
+	});
 });

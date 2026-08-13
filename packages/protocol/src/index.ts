@@ -1164,7 +1164,8 @@ export interface UpdateTaskRequest {
 	body?: string;
 	stateId?: string;
 	orderInState?: number;
-	cwd?: string;
+	/** `null` clears the task's cwd (files it back to Unassigned); omit to leave it unchanged. */
+	cwd?: string | null;
 	archived?: boolean;
 }
 

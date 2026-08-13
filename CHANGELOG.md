@@ -17,6 +17,8 @@ All notable changes to omp-deck. The format is loosely based on
 
 ### Fixed
 
+- **A blank `cwd` (`""` or whitespace) can no longer create a phantom project.** `createTask`/`updateTask` now normalize an empty or whitespace-only `cwd` to `null` before it hits the DB, so `{cwd: ""}` always lands in the Unassigned bucket instead of a stray project no filter can reach. `UpdateTaskRequest.cwd` now accepts `null` end-to-end (protocol → route → DB → `TaskModal`), so clearing the cwd field in the task modal actually un-files a task back to Unassigned instead of silently no-op'ing. `POST`/`PATCH /api/tasks` also now reject a non-string, non-null `cwd` (e.g. `123` or `["a"]`) with a clean 400 instead of coercing it or leaking a raw SQLite driver error.
+- **Deep-linking into a task outside the active project filter no longer overwrites your saved project selection.** `?open=<id>` still widens the board to "All projects" for that session, but the widening is no longer persisted to `localStorage` — your deliberately chosen project comes back on the next reload.
 - **The kanban board is now scoped per project.** Previously every task from every repo rendered on one board: `tasks.cwd` was recorded on each row but `listTasks()` never filtered on it, and `GET /api/tasks` accepted no scope, so a deck driving more than one codebase became unusable. The board now has a project switcher and remembers your selection.
 
 ### Added

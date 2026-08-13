@@ -43,6 +43,16 @@ function notifyTasksChanged(): void {
 	broadcastBus.broadcast({ type: "tasks_changed" });
 }
 
+/**
+ * `cwd` must be absent, `null`, or a string — anything else (number, array,
+ * object) would otherwise reach the DB layer and surface as a raw SQLite
+ * driver TypeError instead of a clean 400.
+ */
+function cwdTypeError(value: unknown): string | undefined {
+	if (value === undefined || value === null || typeof value === "string") return undefined;
+	return "cwd must be a string";
+}
+
 export function buildTasksRouter(): Hono {
 	const app = new Hono();
 
@@ -88,6 +98,8 @@ export function buildTasksRouter(): Hono {
 		if (!body.title || typeof body.title !== "string") {
 			return c.json({ error: "title is required" }, 400);
 		}
+		const cwdError = cwdTypeError(body.cwd);
+		if (cwdError) return c.json({ error: cwdError }, 400);
 		try {
 			const task = createTask(body);
 			notifyTasksChanged();
@@ -111,6 +123,8 @@ export function buildTasksRouter(): Hono {
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
+		const cwdError = cwdTypeError(body.cwd);
+		if (cwdError) return c.json({ error: cwdError }, 400);
 		try {
 			const updated = updateTask(c.req.param("id"), body);
 			if (!updated) return c.json({ error: "not found" }, 404);

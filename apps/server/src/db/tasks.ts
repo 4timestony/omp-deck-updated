@@ -267,6 +267,17 @@ export function getTask(taskId: string): Task | undefined {
 	return row ? rowToTask(row) : undefined;
 }
 
+/**
+ * Collapse "" and whitespace-only strings to null so a blank cwd can never be
+ * stored as a distinct value — every write path funnels through here so
+ * `listTasks({cwd: null})` and the Unassigned bucket stay reachable for every
+ * task with no real cwd. Non-blank strings are stored verbatim, untrimmed.
+ */
+function normalizeCwd(cwd: string | null | undefined): string | null {
+	if (cwd === null || cwd === undefined) return null;
+	return cwd.trim() === "" ? null : cwd;
+}
+
 export function createTask(input: {
 	title: string;
 	body?: string;
@@ -297,7 +308,7 @@ export function createTask(input: {
 		db.prepare<unknown, [string, number, string, string, string, number, string | null, string, string, string]>(
 			`INSERT INTO tasks (id, display_id, title, body, state_id, order_in_state, cwd, created_at, updated_at, state_entered_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(taskId, displayId, input.title, input.body ?? "", state.id, maxOrder + 1000, input.cwd ?? null, now, now, now);
+		).run(taskId, displayId, input.title, input.body ?? "", state.id, maxOrder + 1000, normalizeCwd(input.cwd), now, now, now);
 	})();
 	const out = getTask(taskId);
 	if (!out) throw new Error("createTask failed");
@@ -311,7 +322,8 @@ export function updateTask(
 		body?: string;
 		stateId?: string;
 		orderInState?: number;
-		cwd?: string;
+		/** `null` clears a previously-set cwd; omit to leave it unchanged. */
+		cwd?: string | null;
 		archived?: boolean;
 	},
 ): Task | undefined {
@@ -339,7 +351,7 @@ export function updateTask(
 		next.body,
 		next.stateId,
 		next.orderInState,
-		next.cwd ?? null,
+		normalizeCwd(next.cwd),
 		nowIso(),
 		stateEnteredAt,
 		archivedAt,

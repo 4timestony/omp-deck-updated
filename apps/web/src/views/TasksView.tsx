@@ -99,15 +99,18 @@ export function TasksView() {
 		if (!found) {
 			// The deep-linked task belongs to a project we are not scoped to
 			// (e.g. "Promote to task" from the inbox). Widen to all projects
-			// once rather than silently dropping the link on the floor.
-			if (projectFilter.kind !== "all") setProjectFilter({ kind: "all" });
+			// once rather than silently dropping the link on the floor — but
+			// only for this session: use the raw state setter, not
+			// `setProjectFilter`, so the widening does not overwrite the
+			// user's deliberately saved selection in localStorage.
+			if (projectFilter.kind !== "all") setProjectFilterState({ kind: "all" });
 			return;
 		}
 		setOpenTask(found);
 		const next = new URLSearchParams(searchParams);
 		next.delete("open");
 		setSearchParams(next, { replace: true });
-	}, [searchParams, setSearchParams, tasks, loading, projectFilter, setProjectFilter]);
+	}, [searchParams, setSearchParams, tasks, loading, projectFilter, setProjectFilterState]);
 
 	const tasksByState = useMemo(() => {
 		const map: Record<string, Task[]> = {};
