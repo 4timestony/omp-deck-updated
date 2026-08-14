@@ -427,6 +427,47 @@ describe("PlanModeBridge", () => {
 		expect(harness.frames.some((f) => f.type === "plan_proposed")).toBe(false);
 	});
 
+	// ─── eval-routed propose (deviceDispatchFromResult write/eval allowlist) ─
+
+	it("accepts a propose dispatch routed through the eval tool (Python eval bridge path)", async () => {
+		await harness.bridge.enter();
+		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
+		const result = harness.bridge.onToolExecutionEnd(
+			proposeEvent(
+				{ planFilePath: harness.planFileUrl, title: "plan", planExists: true },
+				{ toolName: "eval" },
+			),
+		);
+		expect(result).toBeUndefined();
+		await waitFor(() => harness.bridge.hasPendingApproval());
+
+		expect(harness.session.markPlanInternalAbortPendingCount).toBe(1);
+		expect(harness.session.clearPlanInternalAbortPendingCount).toBe(1);
+		expect(harness.session.abortCount).toBe(1);
+
+		const proposed = harness.frames.find(
+			(f): f is Extract<PlanModeFrame, { type: "plan_proposed" }> => f.type === "plan_proposed",
+		);
+		expect(proposed?.planFilePath).toBe("local://PLAN.md");
+		expect(proposed?.planContent).toMatch(/Do a thing/);
+		expect(harness.bridge.getPendingPlanApproval()?.proposalId).toBe(proposed?.proposalId);
+	});
+
+	it("ignores an identical xdev envelope carried on a non-allowlisted tool (e.g. bash)", async () => {
+		await harness.bridge.enter();
+		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
+		harness.bridge.onToolExecutionEnd(
+			proposeEvent(
+				{ planFilePath: harness.planFileUrl, title: "plan", planExists: true },
+				{ toolName: "bash" },
+			),
+		);
+		await new Promise<void>((r) => setTimeout(r, 20));
+		expect(harness.bridge.hasPendingApproval()).toBe(false);
+		expect(harness.session.abortCount).toBe(0);
+		expect(harness.frames.some((f) => f.type === "plan_proposed")).toBe(false);
+	});
+
 	// ─── propose → card → approve/reject ───────────────────────────────────
 
 	it("propose broadcasts plan_proposed and exposes it for snapshot replay", async () => {

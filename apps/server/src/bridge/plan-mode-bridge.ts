@@ -22,8 +22,12 @@
  *
  *   3. `onToolExecutionEnd` (wired to the session's `tool_execution_end`
  *      event by `InProcessAgentBridge.attach`) detects the propose dispatch
- *      via `writeDeviceDispatch` and hands off to `#onProposeDispatch`,
- *      which:
+ *      via `deviceDispatchFromResult` — the SDK's own `writeDeviceDispatch`
+ *      for `toolName === "write"`, plus a hand-parsed fallback for
+ *      `toolName === "eval"` (a live session proved the model can route
+ *      `xd://propose` through the Python eval bridge instead of a direct
+ *      `write`, and the eval tool echoes the same dispatch envelope on its
+ *      result) — and hands off to `#onProposeDispatch`, which:
  *      - silently aborts the in-flight turn (`markPlanInternalAbortPending`/
  *        `clearPlanInternalAbortPending` around `session.abort()`) so the
  *        model doesn't re-propose in a loop while the card is up
@@ -72,6 +76,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-coding-agent/extensibility/ex
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { type PlanApprovalDetails, resolvePlanTitle } from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "@oh-my-pi/pi-coding-agent/tools/resolve";
+import type { XdevDispatch } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import type {
 	PendingPlanApprovalWire,
 	PlanModeContextWire,
@@ -145,6 +150,40 @@ If \`todo_write\` fails, fix the payload and retry before continuing.
 You MUST keep going until complete. This matters.
 </critical>
 `;
+
+/**
+ * `writeDeviceDispatch`, widened to also accept the `eval` tool's result.
+ *
+ * The SDK's own helper is hard write-gated (`toolName !== "write"` bails —
+ * `@oh-my-pi/pi-coding-agent/src/tools/resolve.ts:99`), but a live session
+ * proved the model can route an `xd://propose` submission through the Python
+ * eval bridge instead of a direct `write` — `tool.write(path='xd://propose',
+ * content='<title>')` inside an eval cell — and the eval tool propagates the
+ * same dispatch envelope verbatim onto its own result's `details.xdev`.
+ * Without this, that path is silently dropped: no approval card, no abort,
+ * the model just re-proposes in a loop (upstream gap in the SDK; revisit on
+ * the next `@oh-my-pi/pi-coding-agent` bump).
+ *
+ * For `"write"` this delegates to the real `writeDeviceDispatch` so SDK
+ * envelope semantics — and any future change to them — stay authoritative.
+ * For `"eval"` it mirrors the SDK's own envelope checks by hand (resolve.ts
+ * lines 98-107) since the SDK helper won't take the tool name as a param.
+ *
+ * The tool-name allowlist is deliberately kept to exactly these two names —
+ * widening it would let any tool that happens to echo an xdev-shaped
+ * `details` object (by accident or adversarially) trigger a plan approval.
+ */
+function deviceDispatchFromResult(toolName: string, result: unknown): XdevDispatch | undefined {
+	if (toolName === "write") return writeDeviceDispatch(toolName, result);
+	if (toolName !== "eval") return undefined;
+	if (!result || typeof result !== "object" || !("details" in result)) return undefined;
+	const details = result.details;
+	if (!details || typeof details !== "object" || !("xdev" in details)) return undefined;
+	const xdev = details.xdev;
+	if (!xdev || typeof xdev !== "object" || !("tool" in xdev) || !("mode" in xdev)) return undefined;
+	// Envelope verified above; the eval tool propagated a real XdevDispatch here.
+	return xdev as XdevDispatch;
+}
 
 type PlanModeChangedFrame = Extract<ServerFrame, { type: "plan_mode_changed" }>;
 type PlanProposedFrame = Extract<ServerFrame, { type: "plan_proposed" }>;
@@ -466,8 +505,9 @@ export class PlanModeBridge {
 	/**
 	 * SDK event hook: fires on every completed tool execution (wired by
 	 * `InProcessAgentBridge.attach`'s `session.subscribe` callback). Detects
-	 * an `xd://propose` dispatch — the agent submitting a plan for approval —
-	 * and hands off to `#onProposeDispatch`.
+	 * an `xd://propose` dispatch — the agent submitting a plan for approval,
+	 * whether it arrived via a direct `write` or the Python eval bridge (see
+	 * `deviceDispatchFromResult`) — and hands off to `#onProposeDispatch`.
 	 *
 	 * MUST stay synchronous and MUST NOT be awaited by the caller:
 	 * `AgentSession` fans out `session.subscribe` listeners synchronously, so
@@ -478,7 +518,7 @@ export class PlanModeBridge {
 	 */
 	onToolExecutionEnd(event: PlanToolExecutionEndEvent): void {
 		if (!this.enabled || this.pendingApproval) return;
-		const dispatch = writeDeviceDispatch(event.toolName, event.result);
+		const dispatch = deviceDispatchFromResult(event.toolName, event.result);
 		if (!dispatch || dispatch.tool !== PROPOSE_DEVICE_NAME || dispatch.mode !== "execute") return;
 		const inner = dispatch.inner;
 		if (
