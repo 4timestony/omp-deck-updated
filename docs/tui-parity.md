@@ -32,7 +32,7 @@ parity on. Updated alongside SDK upgrades.
 | Marketplace browser | ✓ | Three-panel view over the SDK's `MarketplaceManager`. Suggested seed: `anthropics/claude-plugins-official`. |
 | Themes | ✓ | Paper / Slate / Horizon with system-preference following and FOUC-free pre-paint. |
 | Permission prompts (`ask` tool) | ✓ | Bridged via the `ext_ui_dialog_*` WS frames; agent calls `ctx.ui.select/editor/confirm/input` and the web client renders the matching modal. Replayed to late subscribers so a page reload doesn't strand the user with an invisible blocking modal. |
-| Plan mode | ✓ | Shift+Tab in composer (or `/plan [on\|off]`) toggles plan mode. Agent gets the SDK's plan-mode system prompt + the `resolve` tool. `PlanApproval` inline card surfaces in the chat on `resolve apply`; Reject / Approve / Edit-and-approve. Status pills in composer border, header, and sidebar. |
+| Plan mode | ✓ | Shift+Tab in composer (or `/plan [on\|off]`) toggles plan mode. Agent gets the SDK's plan-mode system prompt + the `write` tool. `PlanApproval` inline card surfaces in the chat when the agent writes its title to `xd://propose`; Reject / Approve / Edit-and-approve. Status pills in composer border, header, and sidebar. |
 | Queued-prompt edit / cancel | ✓ | Hover a queued bubble to reveal Pencil/X. Edit opens an inline textarea (Enter saves, Esc discards, empty saves = cancel). Bridge rebuilds the SDK queue preserving order + ids. |
 | Model fallback chain editing | — | Future. The SDK handles it; the deck just shows the active primary. |
 | Skill management UI | — | Read-only `/skills` view shipped (provider grouping + frontmatter inspector). Author-from-deck flow still backlog. |

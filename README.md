@@ -40,7 +40,7 @@ omp-deck is the cockpit that holds all of that. The chat surface stays at parity
 
 **A kanban that's actually yours.** Backlog → Active → Done columns with drag-and-drop. Tasks get `T-N` display IDs you can refer to in conversation (`/task done T-32`). The agent can mutate the board too — its work becomes visible without you doing the bookkeeping. **One board per project:** every task is filed against a working directory, and the switcher in the kanban header scopes the board to a single repo (or "All projects" when you want the wide view). Your selection is remembered per browser, so two tabs can watch two repos.
 
-**Plan mode** — Shift+Tab in the composer (or `/plan`) flips the active session into read-only-with-resolve mode. The agent investigates, drafts a plan, and surfaces it for your approval. Edit before approving, reject if it's wrong, or hit Approve and watch it execute with full tools restored. Borrowed verbatim from the TUI; brought to where the rest of your workflow lives.
+**Plan mode** — Shift+Tab in the composer (or `/plan`) flips the active session into a read-only planning mode. The agent investigates, drafts a plan, and surfaces it for your approval. Edit before approving, reject if it's wrong, or hit Approve and watch it execute with full tools restored. Borrowed verbatim from the TUI; brought to where the rest of your workflow lives.
 
 **An inbox you can dump into.** Scratch ideas, bug reports, decisions to revisit. One-click promote to task when the dust settles. No mental context-switch from current work.
 

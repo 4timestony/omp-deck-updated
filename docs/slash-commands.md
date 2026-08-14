@@ -72,11 +72,12 @@ state; `/plan on` and `/plan off` are explicit. Equivalent to **Shift+Tab**
 in the composer.
 
 While plan mode is on, the agent gets the SDK's plan-mode system prompt +
-the `resolve` tool added to its active tool set, so writes are gated until
-the user approves. When the agent submits a plan via `resolve apply`, the
-chat surfaces an inline `PlanApproval` card with **Reject**, **Approve**,
-and **Edit & approve**. State indicators: header pill, composer border
-tint, sidebar badge on the active session row.
+the `write` tool added to its active tool set, so working-tree writes stay
+gated until the user approves — proposals ride a `write` to `xd://propose`.
+When the agent submits a plan that way, the chat surfaces an inline
+`PlanApproval` card with **Reject**, **Approve**, and **Edit & approve**.
+State indicators: header pill, composer border tint, sidebar badge on the
+active session row.
 
 Client-virtual — the command is intercepted by the composer and dispatched
 as a `set_plan_mode` WS frame; it never enters the chat as text and costs
