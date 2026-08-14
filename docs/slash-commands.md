@@ -155,9 +155,14 @@ opened in that workspace.
 
 The deck's REST surface exposes the same commands you'd type in the chat:
 
-- `POST /api/tasks { title, stateId? }` — equivalent to `/task add`.
+- `POST /api/tasks { title, stateId?, cwd? }` — equivalent to `/task add`. Pass
+  `cwd` to file the task against a project; omit it and the task lands in the
+  board's "Unassigned" bucket.
 - `PATCH /api/tasks/:id { stateId }` — equivalent to `/task move`.
 - `DELETE /api/tasks/:id`.
+- `GET /api/tasks` — every project. `?cwd=<path>` scopes to one project;
+  `?cwd=` (empty) returns only the unassigned rows. The response always
+  carries an unfiltered `projects[]` so a caller can enumerate the boards.
 
 So a routine, a webhook, or another script can drive the kanban from
 outside the chat — and the WS broadcast still fires, keeping every open

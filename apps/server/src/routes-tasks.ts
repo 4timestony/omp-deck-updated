@@ -13,12 +13,14 @@ import type {
 	CreateTaskStateRequest,
 	ListTasksResponse,
 	MoveTaskRequest,
+	TaskProject,
 	UpdateTaskRequest,
 	UpdateTaskStateRequest,
 } from "@omp-deck/protocol";
 
 import { logger } from "./log.ts";
 import { broadcastBus } from "./broadcast-bus.ts";
+import { deriveLabel } from "./workspace-label.ts";
 import {
 	createState,
 	createTask,
@@ -27,6 +29,7 @@ import {
 	getState,
 	getTask,
 	listStates,
+	listTaskProjects,
 	listTasks,
 	moveTask,
 	reorderStates,
@@ -40,6 +43,16 @@ function notifyTasksChanged(): void {
 	broadcastBus.broadcast({ type: "tasks_changed" });
 }
 
+/**
+ * `cwd` must be absent, `null`, or a string — anything else (number, array,
+ * object) would otherwise reach the DB layer and surface as a raw SQLite
+ * driver TypeError instead of a clean 400.
+ */
+function cwdTypeError(value: unknown): string | undefined {
+	if (value === undefined || value === null || typeof value === "string") return undefined;
+	return "cwd must be a string";
+}
+
 export function buildTasksRouter(): Hono {
 	const app = new Hono();
 
@@ -47,9 +60,31 @@ export function buildTasksRouter(): Hono {
 
 	app.get("/tasks", (c) => {
 		const includeArchived = c.req.query("includeArchived") === "1";
-		const tasks = listTasks({ includeArchived });
+		// `?cwd=<path>` scopes the board to one project. `?cwd=` (present but
+		// empty) selects the rows with no cwd recorded. Omitting the param
+		// entirely returns every project, which is what pre-0.6.2 clients and
+		// the routines/deck step already expect.
+		const cwdParam = c.req.query("cwd");
+		const cwd = cwdParam === undefined ? undefined : cwdParam === "" ? null : cwdParam;
+
+		const tasks = listTasks({ includeArchived, cwd });
 		const states = listStates();
-		const body: ListTasksResponse = { tasks, states };
+		const projects: TaskProject[] = listTaskProjects({ includeArchived })
+			.map((p) => ({
+				cwd: p.cwd,
+				label: p.cwd === null ? "Unassigned" : deriveLabel(p.cwd),
+				taskCount: p.taskCount,
+			}))
+			// Named projects alphabetically; "Unassigned" pinned last so it reads
+			// as the leftovers bucket it is. Ties break on the full path because
+			// two checkouts of the same repo share a label.
+			.sort((a, b) => {
+				if (a.cwd === null) return 1;
+				if (b.cwd === null) return -1;
+				return a.label.localeCompare(b.label) || a.cwd.localeCompare(b.cwd);
+			});
+
+		const body: ListTasksResponse = { tasks, states, projects };
 		return c.json(body);
 	});
 
@@ -63,6 +98,8 @@ export function buildTasksRouter(): Hono {
 		if (!body.title || typeof body.title !== "string") {
 			return c.json({ error: "title is required" }, 400);
 		}
+		const cwdError = cwdTypeError(body.cwd);
+		if (cwdError) return c.json({ error: cwdError }, 400);
 		try {
 			const task = createTask(body);
 			notifyTasksChanged();
@@ -86,6 +123,8 @@ export function buildTasksRouter(): Hono {
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
+		const cwdError = cwdTypeError(body.cwd);
+		if (cwdError) return c.json({ error: cwdError }, 400);
 		try {
 			const updated = updateTask(c.req.param("id"), body);
 			if (!updated) return c.json({ error: "not found" }, 404);

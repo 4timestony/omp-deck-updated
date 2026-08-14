@@ -199,6 +199,13 @@ export class ExtensionUIBridge implements ExtensionUIContext {
 		return () => {};
 	}
 
+	/**
+	 * Added to `ExtensionUIContext` in SDK 17. Autocomplete is a TUI composer
+	 * affordance with no deck equivalent (the web composer sources its own
+	 * completions), so registering a provider is a no-op.
+	 */
+	addAutocompleteProvider(_factory: unknown): void {}
+
 	setStatus(_key: string, _text: string | undefined): void {}
 
 	setWorkingMessage(_message?: string): void {}

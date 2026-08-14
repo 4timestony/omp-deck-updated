@@ -7,6 +7,8 @@ import { cn, truncate } from "@/lib/utils";
 interface Props {
 	task: Task;
 	onOpen: (task: Task) => void;
+	/** Show the owning project on the card — only useful in "All projects". */
+	showProject?: boolean;
 }
 
 /**
@@ -15,7 +17,7 @@ interface Props {
  * will land; the lifted card itself is rendered by the DragOverlay in
  * TasksView. The two modes share `<TaskCardBody>` so the visual is identical.
  */
-export function TaskCard({ task, onOpen }: Props) {
+export function TaskCard({ task, onOpen, showProject = false }: Props) {
 	const {
 		attributes,
 		listeners,
@@ -67,7 +69,7 @@ export function TaskCard({ task, onOpen }: Props) {
 			tabIndex={0}
 			className="group"
 		>
-			<TaskCardBody task={task} lifted={false} />
+			<TaskCardBody task={task} lifted={false} showProject={showProject} />
 		</div>
 	);
 }
@@ -76,7 +78,16 @@ export function TaskCard({ task, onOpen }: Props) {
  * Visual body of the card. Reused by the DragOverlay so the lifted version is
  * identical in shape; only the chrome differs (shadow, scale, rotation).
  */
-export function TaskCardBody({ task, lifted }: { task: Task; lifted: boolean }) {
+export function TaskCardBody({
+	task,
+	lifted,
+	showProject = false,
+}: {
+	task: Task;
+	lifted: boolean;
+	showProject?: boolean;
+}) {
+	const project = task.cwd ? (task.cwd.split(/[\\/]/).filter(Boolean).pop() ?? task.cwd) : null;
 	// Surface the most recent activity timestamp — body edits bump updatedAt
 	// without disturbing the per-column sort, which is exactly the signal a
 	// glance at the card should reveal.
@@ -93,6 +104,11 @@ export function TaskCardBody({ task, lifted }: { task: Task; lifted: boolean }) 
 		>
 			<div className="flex items-baseline gap-2 font-mono text-[10px] uppercase tracking-meta text-ink-3">
 				<span>T-{task.displayId}</span>
+				{showProject ? (
+					<span className="truncate text-ink-4" title={task.cwd ?? "Unassigned"}>
+						{project ?? "unassigned"}
+					</span>
+				) : null}
 				{brief ? (
 					<time
 						dateTime={stamp}

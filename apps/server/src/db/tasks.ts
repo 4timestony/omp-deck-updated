@@ -198,17 +198,63 @@ export function deleteState(stateId: string): { reassigned: number } {
 
 // ─── Tasks ─────────────────────────────────────────────────────────────────
 
-export function listTasks(opts: { includeArchived?: boolean } = {}): Task[] {
-	const where = opts.includeArchived ? "" : "WHERE archived_at IS NULL";
+/**
+ * List tasks, optionally scoped to a single project.
+ *
+ * `opts.cwd` is tri-state on purpose:
+ *   - `undefined` → every project (the historical behaviour; all existing
+ *     callers get exactly what they got before)
+ *   - `null`      → only rows with no cwd recorded ("Unassigned")
+ *   - `string`    → only rows filed against that working directory
+ *
+ * Scoping happens in SQL rather than in the caller so the board, the REST
+ * surface, and any future consumer cannot disagree about what a project is.
+ */
+export function listTasks(opts: { includeArchived?: boolean; cwd?: string | null } = {}): Task[] {
+	const clauses: string[] = [];
+	const params: string[] = [];
+	if (!opts.includeArchived) clauses.push("archived_at IS NULL");
+	if (opts.cwd === null) {
+		clauses.push("cwd IS NULL");
+	} else if (opts.cwd !== undefined) {
+		clauses.push("cwd = ?");
+		params.push(opts.cwd);
+	}
+	const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
 	const rows = getDb()
-		.query<TaskRow, []>(
+		.query<TaskRow, string[]>(
 			`SELECT id, display_id, title, body, state_id, order_in_state, cwd, created_at, updated_at, state_entered_at, archived_at
 			 FROM tasks
 			 ${where}
 			 ORDER BY state_id, state_entered_at DESC, order_in_state ASC`,
 		)
-		.all() as TaskRow[];
+		.all(...params) as TaskRow[];
 	return rows.map(rowToTask);
+}
+
+/** One `cwd` group with its live task count. `cwd: null` == unassigned. */
+export interface TaskProjectCount {
+	cwd: string | null;
+	taskCount: number;
+}
+
+/**
+ * Distinct `tasks.cwd` values with counts, for the project switcher.
+ *
+ * Deliberately independent of any active filter — the switcher must be able
+ * to show you the project you are about to switch *to*.
+ */
+export function listTaskProjects(opts: { includeArchived?: boolean } = {}): TaskProjectCount[] {
+	const where = opts.includeArchived ? "" : "WHERE archived_at IS NULL";
+	const rows = getDb()
+		.query<{ cwd: string | null; task_count: number }, []>(
+			`SELECT cwd, COUNT(*) AS task_count
+			 FROM tasks
+			 ${where}
+			 GROUP BY cwd`,
+		)
+		.all() as { cwd: string | null; task_count: number }[];
+	return rows.map((r) => ({ cwd: r.cwd, taskCount: Number(r.task_count) }));
 }
 
 export function getTask(taskId: string): Task | undefined {
@@ -219,6 +265,17 @@ export function getTask(taskId: string): Task | undefined {
 		)
 		.get(taskId) as TaskRow | null;
 	return row ? rowToTask(row) : undefined;
+}
+
+/**
+ * Collapse "" and whitespace-only strings to null so a blank cwd can never be
+ * stored as a distinct value — every write path funnels through here so
+ * `listTasks({cwd: null})` and the Unassigned bucket stay reachable for every
+ * task with no real cwd. Non-blank strings are stored verbatim, untrimmed.
+ */
+function normalizeCwd(cwd: string | null | undefined): string | null {
+	if (cwd === null || cwd === undefined) return null;
+	return cwd.trim() === "" ? null : cwd;
 }
 
 export function createTask(input: {
@@ -251,7 +308,7 @@ export function createTask(input: {
 		db.prepare<unknown, [string, number, string, string, string, number, string | null, string, string, string]>(
 			`INSERT INTO tasks (id, display_id, title, body, state_id, order_in_state, cwd, created_at, updated_at, state_entered_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(taskId, displayId, input.title, input.body ?? "", state.id, maxOrder + 1000, input.cwd ?? null, now, now, now);
+		).run(taskId, displayId, input.title, input.body ?? "", state.id, maxOrder + 1000, normalizeCwd(input.cwd), now, now, now);
 	})();
 	const out = getTask(taskId);
 	if (!out) throw new Error("createTask failed");
@@ -265,7 +322,8 @@ export function updateTask(
 		body?: string;
 		stateId?: string;
 		orderInState?: number;
-		cwd?: string;
+		/** `null` clears a previously-set cwd; omit to leave it unchanged. */
+		cwd?: string | null;
 		archived?: boolean;
 	},
 ): Task | undefined {
@@ -293,7 +351,7 @@ export function updateTask(
 		next.body,
 		next.stateId,
 		next.orderInState,
-		next.cwd ?? null,
+		normalizeCwd(next.cwd),
 		nowIso(),
 		stateEnteredAt,
 		archivedAt,

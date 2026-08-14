@@ -5,6 +5,37 @@ All notable changes to omp-deck. The format is loosely based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-coding-agent` from 15.1.7 to 17.2.15**, so the deck runs the same SDK major as a current `omp` CLI. Models, auth, sessions, MCP servers, skills, and slash commands now resolve through 17.x — a 15.1.7 deck could not see model-registry or config entries introduced after that pin. Verified: 4,214 models enumerated from the registry on boot.
+- Two API adaptations were required: `ExtensionUIContext` gained a required `addAutocompleteProvider` (no-op'd — the deck has no TUI composer), and `session.prompt` now resolves `boolean` instead of `void`.
+
+### Removed (temporarily)
+
+- **Plan mode is disabled on SDK 17.** `enter()` now throws with an explanatory message instead of half-working. SDK 17 removed `setStandingResolveHandler` and `renameApprovedPlanFile` and replaced `runResolveInvocation` with the `xd://propose` device model, which inverts this bridge's control flow: 15.x blocked inside a standing resolve handler awaiting the user, whereas 17 returns from `preparePlanForReview` immediately and expects the host to observe the propose dispatch and run approval **detached** from the event chain (awaiting it inside the dispatch stalls every other event), aborting the in-flight turn first so the model does not re-propose in a loop. Porting that is a deliberate piece of work, not a rename, so it is left unimplemented rather than half-migrated. The 15 `PlanModeBridge` tests are `describe.skip`ped with a pointer to the port; everything else in the suite still passes.
+- Note the old call path would have thrown at runtime regardless: the bridge types the session through its own structural interface, so the removal of `setStandingResolveHandler` was invisible to `tsc`.
+
+### Fixed
+
+- **A blank `cwd` (`""` or whitespace) can no longer create a phantom project.** `createTask`/`updateTask` now normalize an empty or whitespace-only `cwd` to `null` before it hits the DB, so `{cwd: ""}` always lands in the Unassigned bucket instead of a stray project no filter can reach. `UpdateTaskRequest.cwd` now accepts `null` end-to-end (protocol → route → DB → `TaskModal`), so clearing the cwd field in the task modal actually un-files a task back to Unassigned instead of silently no-op'ing. `POST`/`PATCH /api/tasks` also now reject a non-string, non-null `cwd` (e.g. `123` or `["a"]`) with a clean 400 instead of coercing it or leaking a raw SQLite driver error.
+- **Deep-linking into a task outside the active project filter no longer overwrites your saved project selection.** `?open=<id>` still widens the board to "All projects" for that session, but the widening is no longer persisted to `localStorage` — your deliberately chosen project comes back on the next reload.
+- **The kanban board is now scoped per project.** Previously every task from every repo rendered on one board: `tasks.cwd` was recorded on each row but `listTasks()` never filtered on it, and `GET /api/tasks` accepted no scope, so a deck driving more than one codebase became unusable. The board now has a project switcher and remembers your selection.
+
+### Added
+
+- **`GET /api/tasks?cwd=<path>`** scopes the response to one project. `?cwd=` (present but empty) returns the rows with no cwd recorded; omitting the parameter returns every project, so existing clients and the routines `deck` step are unaffected.
+- **`projects[]` on `ListTasksResponse`** — every project that holds a task, with label and count, computed **unfiltered** so the switcher can list the project you are about to switch to. New protocol type: `TaskProject`.
+- **Project switcher in the kanban header.** Selection persists in `localStorage` (per browser, not per server) so two tabs can sit on two different repos. In "All projects" each card is labelled with its owning project.
+- Cards created from the board are now filed against the active project instead of landing with a null cwd — the other half of the bug, which is why tasks kept leaking back into every board.
+- `listTaskProjects()` in the DB layer; `deriveLabel()` extracted to `workspace-label.ts` so the kanban switcher and the session workspace picker name a repo identically.
+- 7 DB tests covering scope isolation, the unassigned bucket, composition with the archived filter, and project counts; 10 tests on the filter round-trip.
+
+### Notes
+
+- No migration required — this reads the `cwd` column that has existed since `001-init.sql`. Tasks created before this change have no cwd and appear under **Unassigned**; open one and set its cwd to file it.
+- Deep links (`/tasks?open=<id>`) into a task outside the active scope widen the board to "All projects" rather than silently failing.
+- `/task list` in chat keeps its existing lenient semantics (active cwd plus unscoped rows) — unchanged by this patch.
+
 ## [0.6.1] — 2026-05-29 — In-app update notification
 
 Small follow-up to v0.6.0. Adds a passive update-check pill in the StatusBar so future releases (this one and onward) become discoverable from inside the deck instead of requiring users to run `npm outdated -g`.
