@@ -6,8 +6,11 @@
  * old blocking `setStandingResolveHandler` API is gone):
  *
  *   1. Client sends `set_plan_mode {enabled:true}` → `enter()`:
- *      - snapshot active tools, splice in `write` if missing (proposals ride
- *        a `write` to `xd://propose`)
+ *      - snapshot the ENABLED tool set (top-level + xd://-mounted —
+ *        `setActiveToolsByName` consumes this as the complete enabled
+ *        selection, so a merely-active snapshot silently drops xd://-mounted
+ *        tools; see `interactive-mode.ts:2674`), splice in the built-in
+ *        `write` if missing (proposals ride a `write` to `xd://propose`)
  *      - `setActiveToolsByName(planTools)`
  *      - `setPlanModeState({ enabled, planFilePath, workflow })`
  *      - `setPlanProposalHandler(title => session.preparePlanForReview(title))`
@@ -110,8 +113,8 @@ const log = logger("bridge:plan-mode");
 const PLAN_FILE_URL = "local://PLAN.md";
 
 /** Tool the SDK requires active for plan-mode submission — proposals ride a
- *  `write` to `xd://propose`. Spliced into the active tool set on enter if
- *  it isn't already there. */
+ *  `write` to `xd://propose`. Spliced into the enabled tool set on enter,
+ *  but only when it resolves to the built-in `write` (see `enter()`). */
 const PLAN_GATE_TOOL = "write";
 
 /** Workflow flavor passed to `setPlanModeState`. MVP only supports
@@ -210,7 +213,18 @@ export interface PlanToolExecutionEndEvent {
  * spinning up the full SDK.
  */
 export interface PlanModeSessionSurface {
-	getActiveToolNames(): string[];
+	/** Enabled top-level AND xd://-mounted tool names — the full inventory
+	 *  `setActiveToolsByName` treats as the complete enabled selection. MUST
+	 *  NOT be `getActiveToolNames` (top-level only): snapshotting only the
+	 *  active set and replaying it through `setActiveToolsByName` silently
+	 *  drops every xd://-mounted tool and, after one plan round, any enabled-
+	 *  but-not-top-level tool (e.g. `write`) — see
+	 *  `interactive-mode.ts:2674`. */
+	getEnabledToolNames(): string[];
+	/** Whether the live registry entry for `name` came from a built-in
+	 *  factory, as opposed to a shadowing extension tool of the same name
+	 *  (SDK issue #3165). Gates the `write` splice in `enter()`. */
+	hasBuiltInTool(name: string): boolean;
 	setActiveToolsByName(toolNames: string[]): Promise<void>;
 	setPlanModeState(state: { enabled: boolean; planFilePath: string; workflow: "parallel" | "iterative" } | undefined): void;
 	setPlanProposalHandler(handler: ((title: string) => Promise<AgentToolResult<unknown>>) | null): void;
@@ -341,10 +355,15 @@ export class PlanModeBridge {
 	async enter(): Promise<void> {
 		if (this.disposed || this.enabled) return;
 
-		const previousTools = this.session.getActiveToolNames();
-		const planTools = previousTools.includes(PLAN_GATE_TOOL)
-			? previousTools
-			: [...previousTools, PLAN_GATE_TOOL];
+		const previousTools = this.session.getEnabledToolNames();
+		// plan-mode-active.md has the agent draft with `write`/refine with
+		// `edit`, and plan approval itself is a `write` to `xd://propose` —
+		// `write` must be in the enabled set or the agent cannot submit. Only
+		// re-activate the BUILT-IN write: a shadowing extension tool named
+		// `write` must stay inactive (plan mode's read-only guarantee rides
+		// the built-in guard). Mirrors interactive-mode.ts:2674-2690.
+		const planAugmentations: string[] = this.session.hasBuiltInTool(PLAN_GATE_TOOL) ? [PLAN_GATE_TOOL] : [];
+		const planTools = [...new Set([...previousTools, ...planAugmentations])];
 		await this.session.setActiveToolsByName(planTools);
 
 		this.previousTools = previousTools;

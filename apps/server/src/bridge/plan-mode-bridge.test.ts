@@ -34,7 +34,10 @@ type PromptCall = {
 };
 
 class StubSession implements PlanModeSessionSurface {
-	private activeTools: string[];
+	private enabledTools: string[];
+	/** Configurable return for `hasBuiltInTool` — defaults to true (the
+	 *  common case: no shadowing extension tool named `write`). */
+	builtInTools: Record<string, boolean> = {};
 	planModeStateCalls: Array<
 		{ enabled: boolean; planFilePath: string; workflow: "parallel" | "iterative" } | undefined
 	> = [];
@@ -50,15 +53,22 @@ class StubSession implements PlanModeSessionSurface {
 	isStreaming = false;
 
 	constructor(initialTools: string[] = ["search", "find", "lsp", "web_search", "edit"]) {
-		this.activeTools = [...initialTools];
+		this.enabledTools = [...initialTools];
 	}
 
-	getActiveToolNames(): string[] {
-		return [...this.activeTools];
+	getEnabledToolNames(): string[] {
+		return [...this.enabledTools];
+	}
+
+	hasBuiltInTool(name: string): boolean {
+		return this.builtInTools[name] ?? true;
 	}
 
 	async setActiveToolsByName(toolNames: string[]): Promise<void> {
-		this.activeTools = [...toolNames];
+		// `setActiveToolsByName` treats its argument as the complete enabled
+		// selection (not just "active") — mirror that on the stub so a
+		// restore-then-enter round-trip sees the same drift the real SDK would.
+		this.enabledTools = [...toolNames];
 		this.setActiveToolsCalls.push([...toolNames]);
 	}
 
@@ -227,13 +237,13 @@ describe("PlanModeBridge", () => {
 
 	// ─── enter/exit lifecycle ─────────────────────────────────────────────
 
-	it("enter() snapshots tools, splices in write, and broadcasts plan_mode_changed", async () => {
-		const previousTools = harness.session.getActiveToolNames();
+	it("enter() snapshots the ENABLED tools, splices in write, and broadcasts plan_mode_changed", async () => {
+		const previousTools = harness.session.getEnabledToolNames();
 		expect(previousTools.includes("write")).toBe(false);
 
 		await harness.bridge.enter();
 
-		expect(harness.session.getActiveToolNames()).toEqual([...previousTools, "write"]);
+		expect(harness.session.getEnabledToolNames()).toEqual([...previousTools, "write"]);
 		expect(harness.session.planModeStateCalls).toEqual([
 			{ enabled: true, planFilePath: "local://PLAN.md", workflow: "parallel" },
 		]);
@@ -274,16 +284,108 @@ describe("PlanModeBridge", () => {
 			getSessionId: () => "s_with_write",
 		});
 		await bridge.enter();
-		expect(session.getActiveToolNames()).toEqual(["read", "write"]);
+		expect(session.getEnabledToolNames()).toEqual(["read", "write"]);
+		bridge.dispose();
+	});
+
+	it("enter() snapshots the FULL enabled set — xd://-mounted extras survive the round-trip, nothing dropped", async () => {
+		// "eval", "ast_edit", "lsp" stand in for tools mounted under xd:// that
+		// `getActiveToolNames` (top-level only) would have missed — the bug
+		// this fix closes. `write` is deliberately absent so we can also
+		// assert it gets spliced in.
+		const enabledWithXdevExtras = ["read", "edit", "eval", "ast_edit", "lsp"];
+		const session = new StubSession(enabledWithXdevExtras);
+		const bridge = new PlanModeBridge({
+			sessionId: "s_xdev",
+			session,
+			getArtifactsDir: () => harness.dir,
+			getSessionId: () => "s_xdev",
+		});
+
+		await bridge.enter();
+
+		const lastSet = session.setActiveToolsCalls.at(-1);
+		expect(lastSet).toBeDefined();
+		expect(new Set(lastSet)).toEqual(new Set([...enabledWithXdevExtras, "write"]));
+		bridge.dispose();
+	});
+
+	it("enter() does not splice write when it resolves to a shadowing extension tool (hasBuiltInTool(\"write\") === false)", async () => {
+		const enabledTools = ["read", "edit", "eval"];
+		const session = new StubSession(enabledTools);
+		session.builtInTools.write = false;
+		const bridge = new PlanModeBridge({
+			sessionId: "s_shadowed_write",
+			session,
+			getArtifactsDir: () => harness.dir,
+			getSessionId: () => "s_shadowed_write",
+		});
+
+		await bridge.enter();
+
+		// planTools === the enabled snapshot, unchanged — no write splice.
+		// Note: with the extension `write` left inactive, `xd://propose` will
+		// be refused SDK-side (by design — see interactive-mode.ts:2674-2690
+		// and issue #3165); this bridge does not work around that.
+		expect(session.setActiveToolsCalls.at(-1)).toEqual(enabledTools);
+		bridge.dispose();
+	});
+
+	it("regression: a full enter/propose/approve round-trip loses nothing from the original enabled set, and write is spliced again on re-entry", async () => {
+		// Reproduces the user-visible round-2 failure: an active-only snapshot
+		// dropped `write` (enabled-but-not-top-level) after the first restore,
+		// so the SECOND plan round couldn't dispatch xd://propose at all
+		// ("Tool write not found").
+		const originalEnabled = ["read", "edit", "eval", "ast_edit", "lsp"];
+		const session = new StubSession(originalEnabled);
+		const bridge = new PlanModeBridge({
+			sessionId: "s_roundtrip",
+			session,
+			getArtifactsDir: () => harness.dir,
+			getSessionId: () => "s_roundtrip",
+		});
+		const localDir = path.join(harness.dir, "local");
+		const planFile = path.join(localDir, "PLAN.md");
+
+		// Round 1: enter → propose → approve.
+		await bridge.enter();
+		await fs.writeFile(planFile, "# Round 1\n\nDo a thing.\n");
+		bridge.onToolExecutionEnd(
+			proposeEvent({ planFilePath: "local://PLAN.md", title: "round1", planExists: true }),
+		);
+		await waitFor(() => bridge.hasPendingApproval());
+		const pending1 = bridge.getPendingPlanApproval();
+		if (!pending1) throw new Error("expected a pending approval after round 1 propose");
+		await bridge.respond(pending1.proposalId, { approved: true });
+
+		// Restore after approve: everything from the original enabled set is
+		// still present, `write` dropped, `read` already there (no-op force).
+		const restoreCall = session.setActiveToolsCalls.at(-1);
+		expect(restoreCall).toBeDefined();
+		for (const name of originalEnabled) {
+			expect(restoreCall).toContain(name);
+		}
+		expect(restoreCall).not.toContain("write");
+
+		// Round 2: enter again — write must be spliced back in, and nothing
+		// from the original enabled set has been lost across the cycle.
+		await bridge.enter();
+		const round2Set = session.setActiveToolsCalls.at(-1);
+		expect(round2Set).toBeDefined();
+		expect(round2Set).toContain("write");
+		for (const name of originalEnabled) {
+			expect(round2Set).toContain(name);
+		}
+
 		bridge.dispose();
 	});
 
 	it("exit() restores tools, clears the plan-proposal handler, broadcasts off, and is idempotent", async () => {
 		await harness.bridge.enter();
-		const previousTools = harness.session.getActiveToolNames().filter((t) => t !== "write");
+		const previousTools = harness.session.getEnabledToolNames().filter((t) => t !== "write");
 		await harness.bridge.exit("user_cancelled");
 
-		expect(harness.session.getActiveToolNames()).toEqual(previousTools);
+		expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
 		expect(harness.session.planProposalHandlerCalls.at(-1)).toBeNull();
 		expect(harness.session.planModeStateCalls.at(-1)).toBeUndefined();
 		expect(harness.frames.at(-1)).toEqual({
