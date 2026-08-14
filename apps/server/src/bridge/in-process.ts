@@ -465,12 +465,14 @@ export class InProcessAgentBridge implements AgentBridge {
 				// fan-out would stall every other event on the chain until the
 				// approved execution turn finishes, leaving the chat blank.
 				// `onToolExecutionEnd` itself stays synchronous and detaches its
-				// own async continuation; `!isError` is checked here because a
-				// failed dispatch (e.g. a malformed propose call) carries no
-				// usable `xdev` payload.
+				// own async continuation. Forwarded unconditionally, `isError`
+				// included: the bridge needs error events too, to drop a stale
+				// handler-captured propose (its two-trigger design — see
+				// plan-mode-bridge.ts's module doc) rather than risk surfacing it
+				// on some later unrelated tool end.
 				const toolResult = (event as { result?: unknown; isError?: boolean }).result;
 				const isError = (event as { isError?: boolean }).isError;
-				if (toolName && !isError) {
+				if (toolName) {
 					entry?.planBridge.onToolExecutionEnd({ toolName, result: toolResult, isError });
 				}
 			}

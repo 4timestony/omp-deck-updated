@@ -20,14 +20,27 @@
  *      — it does NOT block on the user's decision the way the 15.x standing
  *      handler did.
  *
- *   3. `onToolExecutionEnd` (wired to the session's `tool_execution_end`
- *      event by `InProcessAgentBridge.attach`) detects the propose dispatch
- *      via `deviceDispatchFromResult` — the SDK's own `writeDeviceDispatch`
- *      for `toolName === "write"`, plus a hand-parsed fallback for
- *      `toolName === "eval"` (a live session proved the model can route
- *      `xd://propose` through the Python eval bridge instead of a direct
- *      `write`, and the eval tool echoes the same dispatch envelope on its
- *      result) — and hands off to `#onProposeDispatch`, which:
+ *   3. Propose detection has two triggers, because the SDK's own signal —
+ *      `writeDeviceDispatch` echoing the dispatch envelope onto the `write`
+ *      tool's result — only fires when the model calls `write` directly. A
+ *      live session proved the model can instead route `xd://propose`
+ *      through the Python eval bridge (`tool.write(path='xd://propose', …)`
+ *      inside an eval cell); there the enclosing `tool_execution_end` has
+ *      `toolName === "eval"` and its result carries `EvalToolDetails`
+ *      (language/cells/…) — the envelope never reaches it, only the plan-
+ *      proposal handler that `dispatchResolutionDevice` calls internally.
+ *        - Primary (write path, SDK-authoritative): `onToolExecutionEnd`
+ *          parses the propose dispatch straight off the tool result via
+ *          `writeDeviceDispatch`.
+ *        - Fallback (transport-agnostic): the `setPlanProposalHandler`
+ *          callback installed in `enter()` runs for every propose regardless
+ *          of transport, so it captures `PlanApprovalDetails` into
+ *          `capturedPropose` the instant the handler runs.
+ *          `onToolExecutionEnd` consumes that capture at the *next* tool
+ *          boundary (any tool, not just `write`/`eval`) when the write-path
+ *          parse didn't already find one — matching the SDK's own
+ *          abort-after-result timing rather than aborting mid-dispatch.
+ *      Either trigger hands off to `#onProposeDispatch`, which:
  *      - silently aborts the in-flight turn (`markPlanInternalAbortPending`/
  *        `clearPlanInternalAbortPending` around `session.abort()`) so the
  *        model doesn't re-propose in a loop while the card is up
@@ -76,7 +89,6 @@ import type { AgentToolResult } from "@oh-my-pi/pi-coding-agent/extensibility/ex
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { type PlanApprovalDetails, resolvePlanTitle } from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "@oh-my-pi/pi-coding-agent/tools/resolve";
-import type { XdevDispatch } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import type {
 	PendingPlanApprovalWire,
 	PlanModeContextWire,
@@ -152,37 +164,22 @@ You MUST keep going until complete. This matters.
 `;
 
 /**
- * `writeDeviceDispatch`, widened to also accept the `eval` tool's result.
- *
- * The SDK's own helper is hard write-gated (`toolName !== "write"` bails —
- * `@oh-my-pi/pi-coding-agent/src/tools/resolve.ts:99`), but a live session
- * proved the model can route an `xd://propose` submission through the Python
- * eval bridge instead of a direct `write` — `tool.write(path='xd://propose',
- * content='<title>')` inside an eval cell — and the eval tool propagates the
- * same dispatch envelope verbatim onto its own result's `details.xdev`.
- * Without this, that path is silently dropped: no approval card, no abort,
- * the model just re-proposes in a loop (upstream gap in the SDK; revisit on
- * the next `@oh-my-pi/pi-coding-agent` bump).
- *
- * For `"write"` this delegates to the real `writeDeviceDispatch` so SDK
- * envelope semantics — and any future change to them — stay authoritative.
- * For `"eval"` it mirrors the SDK's own envelope checks by hand (resolve.ts
- * lines 98-107) since the SDK helper won't take the tool name as a param.
- *
- * The tool-name allowlist is deliberately kept to exactly these two names —
- * widening it would let any tool that happens to echo an xdev-shaped
- * `details` object (by accident or adversarially) trigger a plan approval.
+ * Duck-types a propose dispatch's `inner` payload as `PlanApprovalDetails`.
+ * Shared by both propose triggers (the write-path envelope parse and the
+ * handler-capture fallback — see the module doc) so a malformed payload is
+ * rejected identically regardless of which one produced it.
  */
-function deviceDispatchFromResult(toolName: string, result: unknown): XdevDispatch | undefined {
-	if (toolName === "write") return writeDeviceDispatch(toolName, result);
-	if (toolName !== "eval") return undefined;
-	if (!result || typeof result !== "object" || !("details" in result)) return undefined;
-	const details = result.details;
-	if (!details || typeof details !== "object" || !("xdev" in details)) return undefined;
-	const xdev = details.xdev;
-	if (!xdev || typeof xdev !== "object" || !("tool" in xdev) || !("mode" in xdev)) return undefined;
-	// Envelope verified above; the eval tool propagated a real XdevDispatch here.
-	return xdev as XdevDispatch;
+function isPlanApprovalDetailsShape(details: unknown): details is PlanApprovalDetails {
+	return (
+		!!details &&
+		typeof details === "object" &&
+		"planFilePath" in details &&
+		"title" in details &&
+		"planExists" in details &&
+		typeof (details as { planFilePath: unknown }).planFilePath === "string" &&
+		typeof (details as { title: unknown }).title === "string" &&
+		typeof (details as { planExists: unknown }).planExists === "boolean"
+	);
 }
 
 type PlanModeChangedFrame = Extract<ServerFrame, { type: "plan_mode_changed" }>;
@@ -261,6 +258,15 @@ export class PlanModeBridge {
 	private planFilePath: string = PLAN_FILE_URL;
 	private previousTools: string[] = [];
 	private pendingApproval: PendingApproval | undefined;
+	/** Propose seen by the `setPlanProposalHandler` callback but not yet
+	 *  surfaced — consumed by `onToolExecutionEnd` at the next tool boundary.
+	 *  See the module doc's fallback-trigger explanation. */
+	private capturedPropose: PlanApprovalDetails | undefined;
+	/** Set synchronously the instant a propose is launched into
+	 *  `#onProposeDispatch`, cleared when that call settles (success, early
+	 *  return, or throw). Closes the async gap before `pendingApproval` is
+	 *  set, during which a second propose trigger could race in. */
+	#proposeInFlight = false;
 	private disposed = false;
 
 	constructor(args: PlanModeBridgeArgs) {
@@ -350,7 +356,18 @@ export class PlanModeBridge {
 			planFilePath: this.planFilePath,
 			workflow: PLAN_WORKFLOW,
 		});
-		this.session.setPlanProposalHandler((title) => this.session.preparePlanForReview(title));
+		this.session.setPlanProposalHandler(async (title) => {
+			const result = await this.session.preparePlanForReview(title);
+			if (isPlanApprovalDetailsShape(result?.details)) {
+				// Captured, not yet surfaced: the approval flow must not start
+				// inside the tool dispatch (constraint 1), and aborting before the
+				// enclosing tool result lands would diverge from the SDK's
+				// abort-after-result timing. `onToolExecutionEnd` consumes this at
+				// the next tool boundary.
+				this.capturedPropose = result.details;
+			}
+			return result;
+		});
 
 		this.#broadcast({
 			type: "plan_mode_changed",
@@ -376,6 +393,11 @@ export class PlanModeBridge {
 		reason: "user_cancelled" | "session_disposed" | "approved" | "rejected" = "user_cancelled",
 		options: { toolOverride?: string[] } = {},
 	): Promise<void> {
+		// A handler capture is scoped to the plan-mode session that produced
+		// it — any exit (including a no-op idempotent call below) invalidates
+		// it so a later tool end can't surface a stale card. Synchronous, so
+		// it lands before this function's first `await` regardless of caller.
+		this.capturedPropose = undefined;
 		if (this.disposed && reason !== "session_disposed") return;
 		if (!this.enabled && !this.pendingApproval) return;
 
@@ -484,6 +506,7 @@ export class PlanModeBridge {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.capturedPropose = undefined;
 		// Fire-and-forget — dispose is sync; the SDK call chain in exit() is
 		// best-effort during teardown.
 		void this.exit("session_disposed");
@@ -505,9 +528,9 @@ export class PlanModeBridge {
 	/**
 	 * SDK event hook: fires on every completed tool execution (wired by
 	 * `InProcessAgentBridge.attach`'s `session.subscribe` callback). Detects
-	 * an `xd://propose` dispatch — the agent submitting a plan for approval,
-	 * whether it arrived via a direct `write` or the Python eval bridge (see
-	 * `deviceDispatchFromResult`) — and hands off to `#onProposeDispatch`.
+	 * an `xd://propose` dispatch — the agent submitting a plan for approval —
+	 * via either trigger described in the module doc, and hands off to
+	 * `#onProposeDispatch`.
 	 *
 	 * MUST stay synchronous and MUST NOT be awaited by the caller:
 	 * `AgentSession` fans out `session.subscribe` listeners synchronously, so
@@ -517,24 +540,36 @@ export class PlanModeBridge {
 	 * as a detached `void` promise for exactly this reason.
 	 */
 	onToolExecutionEnd(event: PlanToolExecutionEndEvent): void {
-		if (!this.enabled || this.pendingApproval) return;
-		const dispatch = deviceDispatchFromResult(event.toolName, event.result);
-		if (!dispatch || dispatch.tool !== PROPOSE_DEVICE_NAME || dispatch.mode !== "execute") return;
-		const inner = dispatch.inner;
-		if (
-			!inner ||
-			typeof inner !== "object" ||
-			!("planFilePath" in inner) ||
-			!("title" in inner) ||
-			!("planExists" in inner) ||
-			typeof (inner as { planFilePath: unknown }).planFilePath !== "string" ||
-			typeof (inner as { title: unknown }).title !== "string" ||
-			typeof (inner as { planExists: unknown }).planExists !== "boolean"
-		) {
+		if (event.isError) {
+			// A failed enclosing tool (e.g. a malformed eval cell) carries no
+			// usable propose signal — drop any capture so it can't surface on
+			// some later unrelated tool end.
+			this.capturedPropose = undefined;
 			return;
 		}
+		if (!this.enabled || this.pendingApproval || this.#proposeInFlight) return;
+
+		let details: PlanApprovalDetails | undefined;
+		// Primary, SDK-authoritative: a direct `write` to `xd://propose` echoes
+		// the dispatch envelope on its own result.
+		const dispatch = writeDeviceDispatch(event.toolName, event.result);
+		if (dispatch && dispatch.tool === PROPOSE_DEVICE_NAME && dispatch.mode === "execute" && isPlanApprovalDetailsShape(dispatch.inner)) {
+			details = dispatch.inner;
+			// Same propose the handler may already have captured — clear it so
+			// the fallback below can't fire it a second time.
+			this.capturedPropose = undefined;
+		} else if (this.capturedPropose) {
+			// Fallback: the eval-bridge route never echoes the envelope onto the
+			// enclosing `eval` tool's result (see module doc) — the handler saw
+			// it instead. Consume the capture at this tool boundary.
+			details = this.capturedPropose;
+			this.capturedPropose = undefined;
+		}
+		if (!details) return;
+
+		this.#proposeInFlight = true;
 		// MUST NOT be awaited here — see the doc comment above.
-		void this.#onProposeDispatch(inner as PlanApprovalDetails).catch((err) => {
+		void this.#onProposeDispatch(details).catch((err) => {
 			log.warn(`propose dispatch handling failed for ${this.sessionId}`, err);
 		});
 	}
@@ -548,41 +583,49 @@ export class PlanModeBridge {
 	 * nothing here failed in a way the user needs to see.
 	 */
 	async #onProposeDispatch(details: PlanApprovalDetails): Promise<void> {
-		this.session.markPlanInternalAbortPending();
 		try {
-			await this.session.abort();
+			this.session.markPlanInternalAbortPending();
+			try {
+				await this.session.abort();
+			} finally {
+				this.session.clearPlanInternalAbortPending();
+			}
+
+			const planContent = await this.#readPlanFile(details.planFilePath);
+			if (planContent === null) {
+				log.warn(`plan file not found at ${details.planFilePath} for ${this.sessionId}; plan mode stays on`);
+				return;
+			}
+
+			const { title } = resolvePlanTitle({
+				suppliedTitle: details.title,
+				planContent,
+				planFilePath: details.planFilePath,
+			});
+
+			const proposalId = this.#allocateProposalId();
+			this.pendingApproval = {
+				proposalId,
+				planFilePath: details.planFilePath,
+				planContent,
+				suggestedTitle: title,
+			};
+
+			this.#broadcast({
+				type: "plan_proposed",
+				sessionId: this.sessionId,
+				proposalId,
+				planFilePath: details.planFilePath,
+				planContent,
+				suggestedTitle: title,
+			});
 		} finally {
-			this.session.clearPlanInternalAbortPending();
+			// Releases the launch guard set synchronously in
+			// `onToolExecutionEnd` — on every path: success, the missing-plan-
+			// file early return, or a thrown error — so a later tool end can
+			// trigger the next propose.
+			this.#proposeInFlight = false;
 		}
-
-		const planContent = await this.#readPlanFile(details.planFilePath);
-		if (planContent === null) {
-			log.warn(`plan file not found at ${details.planFilePath} for ${this.sessionId}; plan mode stays on`);
-			return;
-		}
-
-		const { title } = resolvePlanTitle({
-			suppliedTitle: details.title,
-			planContent,
-			planFilePath: details.planFilePath,
-		});
-
-		const proposalId = this.#allocateProposalId();
-		this.pendingApproval = {
-			proposalId,
-			planFilePath: details.planFilePath,
-			planContent,
-			suggestedTitle: title,
-		};
-
-		this.#broadcast({
-			type: "plan_proposed",
-			sessionId: this.sessionId,
-			proposalId,
-			planFilePath: details.planFilePath,
-			planContent,
-			suggestedTitle: title,
-		});
 	}
 
 	async #readPlanFile(planFilePath: string): Promise<string | null> {

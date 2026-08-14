@@ -427,17 +427,44 @@ describe("PlanModeBridge", () => {
 		expect(harness.frames.some((f) => f.type === "plan_proposed")).toBe(false);
 	});
 
-	// ─── eval-routed propose (deviceDispatchFromResult write/eval allowlist) ─
+	// ─── handler-capture fallback (eval / Python bridge route) ─────────────
+	//
+	// The SDK's own `write`-path signal (`writeDeviceDispatch` echoing the
+	// envelope onto the tool result) never fires for a propose routed through
+	// the eval tool: the enclosing `tool_execution_end` is `toolName ===
+	// "eval"` and its result carries `EvalToolDetails`, not the envelope.
+	// These tests drive the real fallback — invoke the `setPlanProposalHandler`
+	// callback the bridge installed in `enter()` directly (mirroring what
+	// `dispatchResolutionDevice` does for both `write` and `eval` routes), then
+	// end an `eval` tool with no xdev envelope anywhere on its result.
 
-	it("accepts a propose dispatch routed through the eval tool (Python eval bridge path)", async () => {
+	/** Fires the plan-proposal handler `enter()` installed on the stub
+	 *  session, as `dispatchResolutionDevice` would for either transport. */
+	async function fireHandlerCapture(h: Harness, title = "plan"): Promise<void> {
+		const handler = h.session.planProposalHandlerCalls.at(-1);
+		if (!handler) throw new Error("enter() did not install a plan-proposal handler");
+		await handler(title);
+	}
+
+	/** An `eval` tool's `tool_execution_end` result shape — no xdev envelope
+	 *  anywhere, per `EvalToolDetails` (language/cells/…). */
+	function evalToolEndEvent(overrides: { isError?: boolean } = {}): PlanToolExecutionEndEvent {
+		return {
+			toolName: "eval",
+			isError: overrides.isError,
+			result: {
+				content: [{ type: "text", text: "cell output" }],
+				details: { language: "py", cells: [] },
+			},
+		};
+	}
+
+	it("accepts a propose dispatch routed through the eval tool via the handler capture (Python eval bridge path)", async () => {
 		await harness.bridge.enter();
 		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
-		const result = harness.bridge.onToolExecutionEnd(
-			proposeEvent(
-				{ planFilePath: harness.planFileUrl, title: "plan", planExists: true },
-				{ toolName: "eval" },
-			),
-		);
+		await fireHandlerCapture(harness);
+
+		const result = harness.bridge.onToolExecutionEnd(evalToolEndEvent());
 		expect(result).toBeUndefined();
 		await waitFor(() => harness.bridge.hasPendingApproval());
 
@@ -453,7 +480,7 @@ describe("PlanModeBridge", () => {
 		expect(harness.bridge.getPendingPlanApproval()?.proposalId).toBe(proposed?.proposalId);
 	});
 
-	it("ignores an identical xdev envelope carried on a non-allowlisted tool (e.g. bash)", async () => {
+	it("ignores an xdev envelope carried on a non-allowlisted tool (e.g. bash) absent a prior handler capture", async () => {
 		await harness.bridge.enter();
 		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
 		harness.bridge.onToolExecutionEnd(
@@ -466,6 +493,54 @@ describe("PlanModeBridge", () => {
 		expect(harness.bridge.hasPendingApproval()).toBe(false);
 		expect(harness.session.abortCount).toBe(0);
 		expect(harness.frames.some((f) => f.type === "plan_proposed")).toBe(false);
+	});
+
+	it("clears a handler capture when the enclosing tool ends in error, and does not resurrect it on a later tool end", async () => {
+		await harness.bridge.enter();
+		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
+		await fireHandlerCapture(harness);
+
+		harness.bridge.onToolExecutionEnd(evalToolEndEvent({ isError: true }));
+		await new Promise<void>((r) => setTimeout(r, 20));
+		expect(harness.bridge.hasPendingApproval()).toBe(false);
+		expect(harness.session.abortCount).toBe(0);
+
+		// A later, unrelated tool end must not resurrect the cleared capture.
+		harness.bridge.onToolExecutionEnd({ toolName: "bash", result: { content: [], details: {} } });
+		await new Promise<void>((r) => setTimeout(r, 20));
+		expect(harness.bridge.hasPendingApproval()).toBe(false);
+		expect(harness.session.abortCount).toBe(0);
+	});
+
+	it("two handler captures before the next tool boundary still yield exactly one card", async () => {
+		await harness.bridge.enter();
+		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
+		await fireHandlerCapture(harness, "first");
+		await fireHandlerCapture(harness, "second");
+
+		harness.bridge.onToolExecutionEnd(evalToolEndEvent());
+		await waitFor(() => harness.bridge.hasPendingApproval());
+		await new Promise<void>((r) => setTimeout(r, 20));
+
+		const proposedFrames = harness.frames.filter((f) => f.type === "plan_proposed");
+		expect(proposedFrames.length).toBe(1);
+		expect(harness.session.abortCount).toBe(1);
+	});
+
+	it("exit() clears a handler capture so a later tool end doesn't surface it", async () => {
+		await harness.bridge.enter();
+		await fs.writeFile(harness.planFile, "# Yo\n\nDo a thing.\n");
+		await fireHandlerCapture(harness);
+
+		await harness.bridge.exit("user_cancelled");
+		// Re-enter so the assertion below exercises the cleared capture, not
+		// the (also-correct-but-different) `!this.enabled` guard.
+		await harness.bridge.enter();
+
+		harness.bridge.onToolExecutionEnd(evalToolEndEvent());
+		await new Promise<void>((r) => setTimeout(r, 20));
+		expect(harness.bridge.hasPendingApproval()).toBe(false);
+		expect(harness.session.abortCount).toBe(0);
 	});
 
 	// ─── propose → card → approve/reject ───────────────────────────────────
