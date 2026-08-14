@@ -720,10 +720,8 @@ export interface PendingPlanApprovalWire {
 	planFilePath: string;
 	/** Verbatim contents of `planFilePath` as the agent submitted it. */
 	planContent: string;
-	/** Title derived via SDK `resolvePlanTitle` — pre-fills the title input. */
+	/** Title derived via SDK `resolvePlanTitle` — display-only (SDK 17 never renames the plan file on approve). */
 	suggestedTitle: string;
-	/** Final `local://` path the plan will move to on approve (title-stem.md). */
-	suggestedFinalPath: string;
 }
 
 /** Snapshot delivered when a client subscribes to an existing session. */
@@ -858,23 +856,21 @@ export type ClientFrame =
 	/**
 	 * Enter or exit plan mode for `sessionId`. Idempotent: re-sending the
 	 * same `enabled` value is a no-op. Server snapshots active tools on
-	 * enter and restores them on exit, registers/clears the standing
-	 * resolve handler, and broadcasts a `plan_mode_changed` frame.
+	 * enter and restores them on exit, registers/clears the SDK's plan-
+	 * proposal handler, and broadcasts a `plan_mode_changed` frame.
 	 */
 	| { type: "set_plan_mode"; sessionId: string; enabled: boolean }
 	/**
-	 * Reply to a `plan_proposed` frame. `approved=true` triggers rename +
-	 * synthetic `planModeApprovedPrompt` injection; `approved=false`
-	 * silently exits plan mode. `editedContent` overwrites `local://PLAN.md`
-	 * before the rename; `finalPath` overrides the title-derived destination
-	 * (must be `local://*.md`).
+	 * Reply to a `plan_proposed` frame. `approved=true` triggers a followUp
+	 * `plan-mode-approved` prompt injection; `approved=false` silently exits
+	 * plan mode. `editedContent`, when present, overwrites the plan file at
+	 * its original path before approval — SDK 17 never renames it.
 	 */
 	| {
 			type: "plan_response";
 			sessionId: string;
 			proposalId: string;
 			approved: boolean;
-			finalPath?: string;
 			editedContent?: string;
 	  };
 
@@ -1015,10 +1011,11 @@ export type ServerFrame =
 			planFilePath?: string;
 	  }
 	/**
-	 * Agent has finalized a plan and called `resolve apply`. The web client
-	 * renders an inline `PlanApproval` card with Approve / Reject / Edit &
-	 * approve buttons and replies with `plan_response`. Replayed verbatim
-	 * on `subscribed` via `pendingPlanApproval` so a late tab sees the card.
+	 * Agent has finalized a plan and written its title to `xd://propose`. The
+	 * web client renders an inline `PlanApproval` card with Approve / Reject
+	 * / Edit & approve buttons and replies with `plan_response`. Replayed
+	 * verbatim on `subscribed` via `pendingPlanApproval` so a late tab sees
+	 * the card.
 	 */
 	| {
 			type: "plan_proposed";
@@ -1027,7 +1024,6 @@ export type ServerFrame =
 			planFilePath: string;
 			planContent: string;
 			suggestedTitle: string;
-			suggestedFinalPath: string;
 	  }
 	/**
 	 * A previously-broadcast `plan_proposed` has been resolved. Second-tab

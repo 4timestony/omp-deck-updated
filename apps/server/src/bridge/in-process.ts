@@ -460,6 +460,19 @@ export class InProcessAgentBridge implements AgentBridge {
 						handle.emit({ type: "todo_phases_set", todoPhases: phases } as unknown as AgentSessionEventJson);
 					}
 				}
+				// Plan-mode propose detection. MUST NOT be awaited — SDK issue
+				// #7684: awaiting approval work inside this synchronous listener
+				// fan-out would stall every other event on the chain until the
+				// approved execution turn finishes, leaving the chat blank.
+				// `onToolExecutionEnd` itself stays synchronous and detaches its
+				// own async continuation; `!isError` is checked here because a
+				// failed dispatch (e.g. a malformed propose call) carries no
+				// usable `xdev` payload.
+				const toolResult = (event as { result?: unknown; isError?: boolean }).result;
+				const isError = (event as { isError?: boolean }).isError;
+				if (toolName && !isError) {
+					entry?.planBridge.onToolExecutionEnd({ toolName, result: toolResult, isError });
+				}
 			}
 			// Issue #4 recovery hint: when the SDK surfaces an auth-shaped error
 			// (401 / "Incorrect API key") on a request to an API-key provider

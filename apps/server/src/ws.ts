@@ -398,13 +398,12 @@ export class WsHub {
 		// Like ext_ui_dialog_response: any connection that observed the
 		// plan_proposed (replayed on subscribe) is allowed to answer. We
 		// bump activity to keep the reaper away while the user is mid-
-		// decision and during the renaming/synthetic-prompt phase.
+		// decision and during the tool-restore/followUp-prompt phase.
 		this.bridge.bumpActivity(frame.sessionId);
-		const { approved, finalPath, editedContent, proposalId, sessionId } = frame;
+		const { approved, editedContent, proposalId, sessionId } = frame;
 		try {
 			const outcome = await this.bridge.respondToPlanApproval(sessionId, proposalId, {
 				approved,
-				...(finalPath !== undefined ? { finalPath } : {}),
 				...(editedContent !== undefined ? { editedContent } : {}),
 			});
 			if (outcome === "unknown") {
