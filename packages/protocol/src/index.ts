@@ -789,6 +789,17 @@ export interface ImageAttachment {
 }
 
 /**
+ * Wire shape of a single `select` dialog option. SDK 17's
+ * `ExtensionUISelectItem` is `string | { label; description? }`; the bridge
+ * normalizes every item to this object shape before it goes on the wire, so
+ * the web client only ever has one shape to render.
+ */
+export interface ExtUiSelectOptionWire {
+	label: string;
+	description?: string;
+}
+
+/**
  * Possible extension-UI dialog response shapes returned by the client when an
  * agent (typically the `ask` tool, but any extension can use the same surface)
  * has asked for a selection / confirmation / free-form input.
@@ -964,8 +975,9 @@ export type ServerFrame =
 			kind: "select" | "editor" | "confirm" | "input";
 			/** Title / prompt line shown above the controls. */
 			prompt: string;
-			/** select: option labels in display order. */
-			options?: string[];
+			/** select: options in display order. Each item carries the label the
+			 *  response value must echo back, plus an optional description line. */
+			options?: ExtUiSelectOptionWire[];
 			/** select: hint that the dialog allows multiple selections. */
 			multi?: boolean;
 			/** select: index of the option pre-focused on open. */

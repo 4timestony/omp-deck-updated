@@ -113,6 +113,12 @@ interface SelectBodyProps {
  * Radio list with optional "(Recommended)" marker and free-form
  * "Other (type your own)" input. Mirrors the TUI's `ask` UX so users coming
  * from `omp` see the same options.
+ *
+ * SDK 17: each option is normalized by the bridge to `{ label; description?
+ * }` (was a bare string). Selection state tracks the option object itself
+ * (not the label) since labels can collide — reference equality against the
+ * `dialog.options` array element disambiguates duplicates. The submitted
+ * value is still `opt.label`, matching the `select()` contract.
  */
 function SelectBody({ dialog, onSubmit, onCancel }: SelectBodyProps): JSX.Element {
 	const options = dialog.options ?? [];
@@ -122,7 +128,8 @@ function SelectBody({ dialog, onSubmit, onCancel }: SelectBodyProps): JSX.Elemen
 		return options[0];
 	}, [dialog.initialIndex, dialog.recommended, options]);
 
-	const [selection, setSelection] = useState<string | undefined>(initial);
+	type SelectOption = NonNullable<OpenFrame["options"]>[number];
+	const [selection, setSelection] = useState<SelectOption | typeof OTHER_OPTION_SENTINEL | undefined>(initial);
 	const [customValue, setCustomValue] = useState("");
 	const customRef = useRef<HTMLInputElement>(null);
 	const isCustom = selection === OTHER_OPTION_SENTINEL;
@@ -140,7 +147,7 @@ function SelectBody({ dialog, onSubmit, onCancel }: SelectBodyProps): JSX.Elemen
 			return;
 		}
 		if (selection === undefined) return;
-		onSubmit(selection);
+		onSubmit(selection.label);
 	}
 
 	return (
@@ -156,17 +163,22 @@ function SelectBody({ dialog, onSubmit, onCancel }: SelectBodyProps): JSX.Elemen
 					const isRecommended = idx === dialog.recommended;
 					return (
 						<label
-							key={opt}
+							key={`${opt.label}-${idx}`}
 							className="flex cursor-pointer items-center gap-2 rounded border border-line/60 px-2.5 py-1.5 text-sm text-ink hover:border-line"
 						>
 							<input
 								type="radio"
 								name="ext-ui-select"
-								value={opt}
+								value={opt.label}
 								checked={selection === opt}
 								onChange={() => setSelection(opt)}
 							/>
-							<span className="flex-1">{opt}</span>
+							<span className="flex-1">
+								<span>{opt.label}</span>
+								{opt.description ? (
+									<span className="block text-2xs text-ink-3">{opt.description}</span>
+								) : null}
+							</span>
 							{isRecommended ? (
 								<span className="font-mono text-2xs uppercase tracking-meta text-accent">
 									Recommended

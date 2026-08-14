@@ -10,18 +10,54 @@ interface Op {
 	items?: string[];
 }
 
+/** SDK 17 todo tool args: a single operation, not a 15.x `{ ops: [...] }` array. */
+interface TodoToolArgsV17 {
+	op?: string;
+	/** init: phased task list. */
+	list?: { phase: string; items?: string[] }[];
+	task?: string;
+	phase?: string;
+	/** append: task content to add. */
+	items?: string[];
+	/** block: blocker note. */
+	reason?: string;
+}
+
 const OP_TONE: Record<string, string> = {
 	init: "text-accent",
 	start: "text-accent",
 	done: "text-success",
 	rm: "text-ink-3",
 	drop: "text-warn",
+	block: "text-warn",
+	unblock: "text-accent",
 	append: "text-accent",
 	note: "text-ink-3",
+	view: "text-ink-3",
 };
 
+/**
+ * Normalize either shape into the `Op[]` this card renders:
+ *  - 15.x transcripts: `args.ops` is already an `Op[]` — used verbatim.
+ *  - SDK 17: `args` IS a single op `{op, list?, task?, phase?, items?,
+ *    reason?}` — synthesize one row per `list` phase for `init`, else a
+ *    single row carrying `task`/`items`/`reason` (rendered via the existing
+ *    `text` field).
+ */
+function toOps(args: Record<string, unknown>): Op[] {
+	const legacyOps = (args as { ops?: unknown }).ops;
+	if (Array.isArray(legacyOps)) return legacyOps as Op[];
+
+	const a = args as TodoToolArgsV17;
+	if (!a.op) return [];
+	if (a.op === "init" && Array.isArray(a.list)) {
+		return a.list.map((p) => ({ op: a.op as string, phase: p.phase, items: p.items }));
+	}
+	return [{ op: a.op, task: a.task, phase: a.phase, items: a.items, text: a.reason }];
+}
+
 export function TodoWriteTool({ args, stream }: ToolRendererProps) {
-	const ops = Array.isArray((args as { ops?: Op[] }).ops) ? ((args as { ops: Op[] }).ops) : [];
+	const ops = toOps(args);
 	const result = stream?.result;
 	const resultText = result ? extractResultText(result) : "";
 
@@ -41,7 +77,9 @@ export function TodoWriteTool({ args, stream }: ToolRendererProps) {
 							{op.items ? (
 								<ul className="ml-3 mt-0.5 list-disc text-ink-2">
 									{op.items.map((it, j) => (
-										<li key={j}>{it}</li>
+										// Items are strings per the schema, but SDK 17's shape change is
+										// exactly why we don't trust that without a defensive coercion.
+										<li key={j}>{String(it)}</li>
 									))}
 								</ul>
 							) : null}

@@ -23,15 +23,29 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUiComponentFactory,
+	ExtensionUISelectItem,
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 	TerminalInputHandler,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import type { ExtUiDialogResponse, ServerFrame } from "@omp-deck/protocol";
+import type { ExtUiDialogResponse, ExtUiSelectOptionWire, ServerFrame } from "@omp-deck/protocol";
 
 import { logger } from "../log.ts";
 
 const log = logger("bridge:ext-ui");
+
+/**
+ * Normalize an `ExtensionUISelectItem[]` (SDK 17: `string | { label;
+ * description? }` per item) to a uniform `{ label; description? }[]` for the
+ * wire. The response value the dialog resolves with is still the selected
+ * LABEL string — normalizing only affects what's sent to render the options,
+ * not the round-trip contract.
+ */
+function normalizeSelectOptions(options: ExtensionUISelectItem[]): ExtUiSelectOptionWire[] {
+	return options.map((opt) =>
+		typeof opt === "string" ? { label: opt } : { label: opt.label, ...(opt.description !== undefined ? { description: opt.description } : {}) },
+	);
+}
 
 type DialogOpenFrame = Extract<ServerFrame, { type: "ext_ui_dialog_open" }>;
 type DialogCancelFrame = Extract<ServerFrame, { type: "ext_ui_dialog_cancel" }>;
@@ -113,10 +127,14 @@ export class ExtensionUIBridge implements ExtensionUIContext {
 
 	select(
 		prompt: string,
-		options: string[],
+		options: ExtensionUISelectItem[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
-		const fields: Pick<DialogOpenFrame, "options"> = { options };
+		// SDK 17: `ExtensionUISelectItem = string | { label; description? }`.
+		// Normalize to a single object shape on the wire so the web client
+		// never has to branch on the item type (and never renders a raw
+		// object as a React child).
+		const fields: Pick<DialogOpenFrame, "options"> = { options: normalizeSelectOptions(options) };
 		return this.openDialog<string | undefined>(
 			{ kind: "select", prompt, ...fields },
 			dialogOptions,

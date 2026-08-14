@@ -31,10 +31,33 @@ describe("ExtensionUIBridge", () => {
 		expect(frame.sessionId).toBe("s_test");
 		expect(frame.kind).toBe("select");
 		expect(frame.prompt).toBe("Pick one");
-		expect(frame.options).toEqual(["a", "b", "c"]);
+		// SDK 17: `select()` takes `ExtensionUISelectItem[]`; the bridge
+		// normalizes every item to `{ label; description? }` on the wire.
+		expect(frame.options).toEqual([{ label: "a" }, { label: "b" }, { label: "c" }]);
 
 		bridge.handleResponse(frame.dialogId, { value: "b" });
 		expect(await promise).toBe("b");
+	});
+
+	it("select() normalizes mixed string/object options and resolves with the label", async () => {
+		const bridge = new ExtensionUIBridge("s_test");
+		const { frames } = collect(bridge);
+
+		const promise = bridge.select("Pick one", [
+			"plain",
+			{ label: "rich", description: "has a description" },
+		]);
+
+		const frame = frames[0] as OpenFrame;
+		expect(frame.options).toEqual([
+			{ label: "plain" },
+			{ label: "rich", description: "has a description" },
+		]);
+
+		// The response value is still the selected LABEL string — unchanged
+		// round-trip contract regardless of how the option was expressed.
+		bridge.handleResponse(frame.dialogId, { value: "rich" });
+		expect(await promise).toBe("rich");
 	});
 
 	it("returns undefined when the client cancels", async () => {
